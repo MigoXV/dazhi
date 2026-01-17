@@ -4,15 +4,13 @@
 通过语音识别与 MCP 工具交互
 """
 import asyncio
+import os
 
 import dotenv
 
-from dazhi.inferencers.mcp.inferencer import (
-    LLMConfig,
-    MCPConfig,
-    VoiceMCPInferencer,
-)
+from dazhi.agents.audio_mcp_agent import VoiceMCPAgent
 from dazhi.inferencers.realtime.inferencer import RealtimeConfig
+from dazhi.mcp_adaptors.config import LLMConfig, MCPConfig
 
 dotenv.load_dotenv()
 
@@ -29,10 +27,19 @@ SYSTEM_PROMPT = """你是麦当劳智能助手，可以帮助用户：
 
 async def main():
     mcp_config = MCPConfig(mcp_url=MCD_MCP_URL)
-    llm_config = LLMConfig(model="qwen3:8B", system_prompt=SYSTEM_PROMPT)
-    realtime_config = RealtimeConfig(model="transcribe", output_modalities=["text"])
-
-    inferencer = VoiceMCPInferencer(
+    llm_api_key = os.getenv("LLM_API_KEY", "")
+    llm_base_url = os.getenv("LLM_BASE_URL", "https://api.llmbase")
+    llm_model = os.environ.get("LLM_MODEL", "qwen3:8B")
+    llm_config = LLMConfig(
+        api_key=llm_api_key,
+        base_url=llm_base_url,
+        model=llm_model,
+        system_prompt=SYSTEM_PROMPT,
+    )
+    print("使用 LLM 配置：", llm_config)
+    realtime_config = RealtimeConfig(model="transcrib", output_modalities=["text"])
+    print("使用实时推理配置：", realtime_config)
+    inferencer = VoiceMCPAgent(
         mcp_config=mcp_config,
         llm_config=llm_config,
         realtime_config=realtime_config,

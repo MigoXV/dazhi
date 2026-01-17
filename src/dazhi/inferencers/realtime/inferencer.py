@@ -3,18 +3,38 @@
 import asyncio
 import os
 import ssl
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable
+from typing import Any, AsyncIterator, Callable, List, Optional
 
 from openai import AsyncOpenAI
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
-from openai.types.realtime.realtime_session_create_request import \
-    RealtimeSessionCreateRequest
+from openai.types.realtime import (
+    ResponseOutputItemAddedEvent,
+    ConversationItemInputAudioTranscriptionCompletedEvent,
+    RealtimeSessionCreateRequest,
+    ResponseAudioDeltaEvent,
+    ResponseAudioTranscriptDeltaEvent,
+    ResponseDoneEvent,
+    ResponseFunctionCallArgumentsDeltaEvent,
+    ResponseFunctionCallArgumentsDoneEvent,
+    ResponseTextDeltaEvent,
+    ResponseTextDoneEvent,
+    SessionCreatedEvent,
+    SessionUpdatedEvent,
+    RealtimeConversationItemFunctionCallOutput,
+)
 
-from dazhi.codec.audio import (CHANNELS, SAMPLE_RATE, AudioPlayerAsync,
-                               AudioRecorder, decode_audio_from_base64,
-                               encode_audio_to_base64, query_audio_devices)
+from dazhi.codec.audio import (
+    CHANNELS,
+    SAMPLE_RATE,
+    AudioPlayerAsync,
+    AudioRecorder,
+    decode_audio_from_base64,
+    encode_audio_to_base64,
+    query_audio_devices,
+)
+from dazhi.handlers import DefaultEventHandler, RealtimeEventHandler
+from openai.types.realtime import RealtimeFunctionTool
 
 
 @dataclass
@@ -37,112 +57,13 @@ class RealtimeConfig:
             self.api_key = os.getenv("OPENAI_API_KEY")
 
 
-@dataclass
-class TranscriptEvent:
-    """转录事件"""
-
-    item_id: str
-    delta: str
-    accumulated_text: str
-
-
-@dataclass
-class AudioEvent:
-    """音频事件"""
-
-    item_id: str
-    audio_data: bytes
-
-
-@dataclass
-class InputTranscriptEvent:
-    """输入音频转写完成事件"""
-
-    item_id: str
-    transcript: str
-
-
-class RealtimeEventHandler(ABC):
-    """实时事件处理器抽象基类"""
-
-    @abstractmethod
-    async def on_session_created(self, session_id: str) -> None:
-        """会话创建时调用"""
-        pass
-
-    @abstractmethod
-    async def on_session_updated(self) -> None:
-        """会话更新时调用"""
-        pass
-
-    @abstractmethod
-    async def on_transcript_delta(self, event: TranscriptEvent) -> None:
-        """收到转录增量时调用"""
-        pass
-
-    @abstractmethod
-    async def on_audio_delta(self, event: AudioEvent) -> None:
-        """收到音频增量时调用"""
-        pass
-
-    @abstractmethod
-    async def on_response_done(self) -> None:
-        """响应完成时调用"""
-        pass
-
-    @abstractmethod
-    async def on_input_transcript_completed(self, event: InputTranscriptEvent) -> None:
-        """输入音频转写完成时调用 - 用于语音识别结果"""
-        pass
-
-
-class DefaultEventHandler(RealtimeEventHandler):
-    """默认事件处理器 - 打印到控制台"""
-
-    def __init__(self, audio_player: AudioPlayerAsync | None = None):
-        self.audio_player = audio_player
-        self.last_audio_item_id: str | None = None
-
-    async def on_session_created(self, session_id: str) -> None:
-        print(f"✓ Session created: {session_id}")
-
-    async def on_session_updated(self) -> None:
-        print("✓ Session updated")
-
-    async def on_transcript_delta(self, event: TranscriptEvent) -> None:
-        print(f"\rTranscript: {event.delta}")
-
-    async def on_audio_delta(self, event: AudioEvent) -> None:
-        if self.audio_player:
-            if event.item_id != self.last_audio_item_id:
-                self.audio_player.reset_frame_count()
-                self.last_audio_item_id = event.item_id
-            self.audio_player.add_data(event.audio_data)
-
-    async def on_response_done(self) -> None:
-        print()  # New line after transcript
-
-    async def on_input_transcript_completed(self, event: InputTranscriptEvent) -> None:
-        print(f"\n✓ 语音识别完成: {event.transcript}")
-
-
 class RealtimeInferencer:
-    """实时推理器
-
-    用于处理实时音频流并获取转录/响应结果。
-
-    Example:
-        ```python
-        config = RealtimeConfig(model="transcribe")
-        inferencer = RealtimeInferencer(config)
-        await inferencer.run()
-        ```
-    """
 
     def __init__(
         self,
         config: RealtimeConfig | None = None,
         event_handler: RealtimeEventHandler | None = None,
+        tools: Optional[List[RealtimeFunctionTool]] = None,
     ):
         """
         初始化实时推理器
@@ -150,8 +71,11 @@ class RealtimeInferencer:
         Args:
             config: 推理配置，如果为None则使用默认配置
             event_handler: 事件处理器，如果为None则使用默认处理器
+            tools: 可选的实时函数工具列表
         """
         self.config = config or RealtimeConfig()
+        self.tools = tools or []
+
         self.client = AsyncOpenAI(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
@@ -172,61 +96,59 @@ class RealtimeInferencer:
 
     def _get_event_handler(self) -> RealtimeEventHandler:
         """获取事件处理器"""
-        if self.event_handler:
-            return self.event_handler
-        return DefaultEventHandler(self.audio_player)
+        if not self.event_handler:
+            self.event_handler = DefaultEventHandler(self.audio_player)
+        return self.event_handler
 
     async def _handle_event(self, event: Any) -> None:
         """处理单个事件"""
         handler = self._get_event_handler()
-
-        if event.type == "session.created":
+        # 创建会话事件
+        if isinstance(event, SessionCreatedEvent):
             await handler.on_session_created(event.session.id)
             return
-
-        if event.type == "session.updated":
+        # 会话更新事件
+        if isinstance(event, SessionUpdatedEvent):
             await handler.on_session_updated()
             return
-
-        if event.type == "response.output_audio.delta":
-            audio_data = decode_audio_from_base64(event.delta)
-            await handler.on_audio_delta(
-                AudioEvent(item_id=event.item_id, audio_data=audio_data)
-            )
+        # 处理对话创建事件
+        if isinstance(event, ResponseOutputItemAddedEvent):
+            await handler.on_response_output_item_add(event)
             return
-
-        if event.type == "response.output_audio_transcript.delta":
-            # 累积文本
-            if event.item_id not in self._accumulated_items:
-                self._accumulated_items[event.item_id] = event.delta
-            else:
-                self._accumulated_items[event.item_id] += event.delta
-
-            await handler.on_transcript_delta(
-                TranscriptEvent(
-                    item_id=event.item_id,
-                    delta=event.delta,
-                    accumulated_text=self._accumulated_items[event.item_id],
+        # 处理 function call 参数增量事件（打字机效果）
+        if isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
+            await handler.on_function_call_delta(event)
+            return
+        # 处理 function call 参数完成事件
+        if isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
+            result = await handler.on_function_call_done(event)
+            if result is not None:
+                await self.connection.conversation.item.create(
+                    item=RealtimeConversationItemFunctionCallOutput(
+                        call_id=event.call_id,
+                        output=result,
+                        type="function_call_output",
+                    )
                 )
-            )
             return
-
-        if event.type == "response.done":
-            await handler.on_response_done()
+        # 处理音频转文本增量事件
+        if isinstance(event, ResponseAudioTranscriptDeltaEvent):
+            await handler.on_transcript_delta(event)
             return
-
-        # 处理输入音频转写完成事件 (语音识别结果)
-        if event.type == "conversation.item.input_audio_transcription.completed":
-            await handler.on_input_transcript_completed(
-                InputTranscriptEvent(
-                    item_id=event.item_id,
-                    transcript=event.transcript,
-                )
-            )
+        # 处理用户语音转写完成事件
+        if isinstance(event, ConversationItemInputAudioTranscriptionCompletedEvent):
+            await handler.on_input_audio_transcription_completed(event)
             return
-
-        # 打印未处理的事件类型（调试用）
-        # print(f"[DEBUG] Unhandled event: {event.type}")
+        # 处理 LLM 文本响应增量事件（打字机效果）
+        if isinstance(event, ResponseTextDeltaEvent):
+            await handler.on_text_delta(event)
+            return
+        # 处理 LLM 文本响应完成事件（对话结束标记）
+        if isinstance(event, ResponseTextDoneEvent):
+            await handler.on_text_done(event)
+            return
+        print(f"Unhandled event type: {type(event)}")
+        return
 
     async def _handle_connection(self) -> None:
         """处理实时连接"""
@@ -244,6 +166,8 @@ class RealtimeInferencer:
                 session=RealtimeSessionCreateRequest(
                     type="realtime",
                     output_modalities=self.config.output_modalities,
+                    tools=self.tools,
+                    model=self.config.model,
                 )
             )
             print("✓ Session configured")
@@ -339,14 +263,3 @@ class RealtimeInferencer:
         await self.stop()
         if self.audio_player:
             self.audio_player.close()
-
-
-async def main():
-    """示例入口"""
-    config = RealtimeConfig()
-    inferencer = RealtimeInferencer(config)
-    await inferencer.run()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())

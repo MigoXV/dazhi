@@ -11,6 +11,14 @@
             "program": "${file}",
             "console": "integratedTerminal",
             "envFile": "${workspaceFolder}/.env"
+        },
+        {
+            "name": "test mcp inferencer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "tests/test_mcp/test_mcp_inferencer.py",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }

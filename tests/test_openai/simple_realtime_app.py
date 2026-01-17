@@ -11,7 +11,7 @@ from dazhi.inferencers.realtime.inferencer import (RealtimeConfig,
 
 async def main():
     config = RealtimeConfig(
-        model="transcribe",
+        model="transcrib",
         output_modalities=["text"],
     )
     inferencer = RealtimeInferencer(config)
