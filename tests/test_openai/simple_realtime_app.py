@@ -5,8 +5,11 @@ Simplified Realtime API app - immediately starts audio streaming and receiving r
 """
 import asyncio
 
-from dazhi.inferencers.realtime.inferencer import (RealtimeConfig,
-                                                   RealtimeInferencer)
+from dazhi.codec.audio import AudioRecorder
+from dazhi.inferencers.realtime.inferencer import (
+    RealtimeConfig,
+    RealtimeInferencer,
+)
 
 
 async def main():
@@ -15,7 +18,11 @@ async def main():
         output_modalities=["text"],
     )
     inferencer = RealtimeInferencer(config)
-    await inferencer.run()
+    recorder = AudioRecorder(
+        channels=config.channels,
+        sample_rate=config.sample_rate,
+    )
+    await inferencer.run(audio_recorder=recorder)
 
 
 if __name__ == "__main__":

@@ -1,13 +1,17 @@
-"""实时推理器模块"""
+from typing import Any, Dict, List, Optional
 
 from openai.types.realtime import (
     ConversationItemInputAudioTranscriptionCompletedEvent,
+    RealtimeConversationItemFunctionCallOutput,
     ResponseAudioDeltaEvent,
+    ResponseAudioTranscriptDeltaEvent,
     ResponseFunctionCallArgumentsDeltaEvent,
     ResponseFunctionCallArgumentsDoneEvent,
     ResponseOutputItemAddedEvent,
     ResponseTextDeltaEvent,
     ResponseTextDoneEvent,
+    SessionCreatedEvent,
+    SessionUpdatedEvent,
 )
 
 from dazhi.codec import AudioPlayerAsync
@@ -15,11 +19,12 @@ from dazhi.codec import AudioPlayerAsync
 from .base import FunctionCallDoneCallback, RealtimeEventHandler
 
 
-class DefaultEventHandler(RealtimeEventHandler):
+class GradioEventHandler(RealtimeEventHandler):
     """默认事件处理器 - 打印到控制台"""
 
     def __init__(
         self,
+        chatbot_history: List[Dict[str, str]],
         audio_player: AudioPlayerAsync | None = None,
         on_function_call_done_callback: FunctionCallDoneCallback | None = None,
     ):
@@ -30,12 +35,16 @@ class DefaultEventHandler(RealtimeEventHandler):
         self._current_function_name: str | None = None  # 当前调用的函数名
         self._on_function_call_done_callback = on_function_call_done_callback
 
+        self.chatbot_history = chatbot_history    
+        
     async def on_session_created(self, session_id: str) -> None:
         # print(f"✓ Session created: {session_id}")
         pass
+
     async def on_session_updated(self) -> None:
         # print("✓ Session updated")
         pass
+
     async def on_response_output_item_add(
         self, event: ResponseOutputItemAddedEvent
     ) -> None:
@@ -114,3 +123,11 @@ class DefaultEventHandler(RealtimeEventHandler):
             # print()  # 换行
             pass
             self._text_started = False
+
+    async def handle_event(self, event: Any, connection: Any = None) -> None:
+        """处理单个事件"""
+        print(event)
+        self.chatbot_history.append(
+            {"role": "assistant", "content": str(event)}
+        )
+        return

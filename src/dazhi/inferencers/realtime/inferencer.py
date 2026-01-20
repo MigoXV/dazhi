@@ -1,40 +1,26 @@
 """实时推理器模块"""
 
 import asyncio
+import logging
 import os
 import ssl
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from openai import AsyncOpenAI
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
-from openai.types.realtime import (
-    ResponseOutputItemAddedEvent,
-    ConversationItemInputAudioTranscriptionCompletedEvent,
-    RealtimeSessionCreateRequest,
-    ResponseAudioDeltaEvent,
-    ResponseAudioTranscriptDeltaEvent,
-    ResponseDoneEvent,
-    ResponseFunctionCallArgumentsDeltaEvent,
-    ResponseFunctionCallArgumentsDoneEvent,
-    ResponseTextDeltaEvent,
-    ResponseTextDoneEvent,
-    SessionCreatedEvent,
-    SessionUpdatedEvent,
-    RealtimeConversationItemFunctionCallOutput,
-)
+from openai.types.realtime import RealtimeFunctionTool, RealtimeSessionCreateRequest
 
-from dazhi.codec.audio import (
+from dazhi.codec import (
     CHANNELS,
     SAMPLE_RATE,
     AudioPlayerAsync,
     AudioRecorder,
-    decode_audio_from_base64,
     encode_audio_to_base64,
-    query_audio_devices,
 )
-from dazhi.handlers import DefaultEventHandler, RealtimeEventHandler
-from openai.types.realtime import RealtimeFunctionTool
+from dazhi.handlers import RealtimeEventHandler
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,9 +47,10 @@ class RealtimeInferencer:
 
     def __init__(
         self,
-        config: RealtimeConfig | None = None,
-        event_handler: RealtimeEventHandler | None = None,
-        tools: Optional[List[RealtimeFunctionTool]] = None,
+        config: RealtimeConfig,
+        event_handler: RealtimeEventHandler,
+        audio_recorder: AudioRecorder,
+        tools: List[RealtimeFunctionTool] = [],
     ):
         """
         初始化实时推理器
@@ -73,18 +60,21 @@ class RealtimeInferencer:
             event_handler: 事件处理器，如果为None则使用默认处理器
             tools: 可选的实时函数工具列表
         """
-        self.config = config or RealtimeConfig()
-        self.tools = tools or []
+        self.config = config
+        self.read_size = int(self.config.sample_rate * self.config.read_interval)
 
+        self.event_handler = event_handler
+        self.tools = tools
         self.client = AsyncOpenAI(
             base_url=self.config.base_url,
             api_key=self.config.api_key,
         )
-        self.audio_player: AudioPlayerAsync | None = None
-        self.event_handler = event_handler
+        self.audio_player = audio_recorder
+
         self.connection: AsyncRealtimeConnection | None = None
+
         self.is_running = False
-        self._accumulated_items: dict[str, str] = {}
+        self._connected = asyncio.Event()
 
     def _create_ssl_context(self) -> ssl.SSLContext:
         """创建 SSL 上下文"""
@@ -94,161 +84,91 @@ class RealtimeInferencer:
             ssl_context.verify_mode = ssl.CERT_NONE
         return ssl_context
 
-    def _get_event_handler(self) -> RealtimeEventHandler:
-        """获取事件处理器"""
-        if not self.event_handler:
-            self.event_handler = DefaultEventHandler(self.audio_player)
-        return self.event_handler
+    async def connect(self) -> None:
+        """处理实时连接"""
+        try:
+            ssl_context = self._create_ssl_context()
+            async with self.client.realtime.connect(
+                model=self.config.model,
+                websocket_connection_options={"ssl": ssl_context},
+            ) as conn:
+                self.connection = conn
+                logger.info("✓ Connected to Realtime API")
 
-    async def _handle_event(self, event: Any) -> None:
-        """处理单个事件"""
-        handler = self._get_event_handler()
-        # 创建会话事件
-        if isinstance(event, SessionCreatedEvent):
-            await handler.on_session_created(event.session.id)
-            return
-        # 会话更新事件
-        if isinstance(event, SessionUpdatedEvent):
-            await handler.on_session_updated()
-            return
-        # 处理对话创建事件
-        if isinstance(event, ResponseOutputItemAddedEvent):
-            await handler.on_response_output_item_add(event)
-            return
-        # 处理 function call 参数增量事件（打字机效果）
-        if isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
-            await handler.on_function_call_delta(event)
-            return
-        # 处理 function call 参数完成事件
-        if isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
-            result = await handler.on_function_call_done(event)
-            if result is not None:
-                await self.connection.conversation.item.create(
-                    item=RealtimeConversationItemFunctionCallOutput(
-                        call_id=event.call_id,
-                        output=result,
-                        type="function_call_output",
+                # 配置会话
+                await conn.session.update(
+                    session=RealtimeSessionCreateRequest(
+                        type="realtime",
+                        output_modalities=self.config.output_modalities,
+                        tools=self.tools,
+                        model=self.config.model,
                     )
                 )
-            return
-        # 处理音频转文本增量事件
-        if isinstance(event, ResponseAudioTranscriptDeltaEvent):
-            await handler.on_transcript_delta(event)
-            return
-        # 处理用户语音转写完成事件
-        if isinstance(event, ConversationItemInputAudioTranscriptionCompletedEvent):
-            await handler.on_input_audio_transcription_completed(event)
-            return
-        # 处理 LLM 文本响应增量事件（打字机效果）
-        if isinstance(event, ResponseTextDeltaEvent):
-            await handler.on_text_delta(event)
-            return
-        # 处理 LLM 文本响应完成事件（对话结束标记）
-        if isinstance(event, ResponseTextDoneEvent):
-            await handler.on_text_done(event)
-            return
-        print(f"Unhandled event type: {type(event)}")
-        return
+                logger.info("✓ Session configured")
 
-    async def _handle_connection(self) -> None:
-        """处理实时连接"""
-        ssl_context = self._create_ssl_context()
+                self._connected.set()
+                async for event in conn:
+                    if not self.is_running:
+                        break
+                    await self.event_handler.handle_event(event, self.connection)
+        except Exception as e:
+            logger.error(f"Error in RealtimeInferencer connection: {e}")
+        finally:
+            self.connection = None
+            self._connected.clear()
+            logger.info("✓ Disconnected from Realtime API")
 
-        async with self.client.realtime.connect(
-            model=self.config.model,
-            websocket_connection_options={"ssl": ssl_context},
-        ) as conn:
-            self.connection = conn
-            print("✓ Connected to Realtime API")
-
-            # 配置会话
-            await conn.session.update(
-                session=RealtimeSessionCreateRequest(
-                    type="realtime",
-                    output_modalities=self.config.output_modalities,
-                    tools=self.tools,
-                    model=self.config.model,
-                )
+    async def send_audio_loop(self, enable_audio_playback: bool = True) -> None:
+        """循环发送音频数据"""
+        logger.info(f"send_audio_loop started, enable_audio_playback={enable_audio_playback}")
+        self.is_running = True
+        if enable_audio_playback:
+            self.audio_player = AudioPlayerAsync(
+                sample_rate=self.config.sample_rate,
+                channels=self.config.channels,
             )
-            print("✓ Session configured")
+            await self.audio_player.start()
+        else:
+            await self.audio_player.start()
 
-            async for event in conn:
-                if not self.is_running:
-                    break
-                await self._handle_event(event)
-
-    async def _send_audio(self) -> None:
-        """发送麦克风音频"""
-        sent_audio = False
-        read_size = int(self.config.sample_rate * self.config.read_interval)
-
-        device_info = query_audio_devices()
-        print(f"Audio devices: {device_info}")
-
-        recorder = AudioRecorder(
-            channels=self.config.channels,
-            sample_rate=self.config.sample_rate,
-        )
-        recorder.start()
-        print("✓ Audio stream started - now recording...")
-
+        logger.info("Waiting for connection...")
+        await self._connected.wait()
+        logger.info("✓ Audio sending started")
         try:
             while self.is_running:
-                if recorder.read_available() < read_size:
-                    await asyncio.sleep(0)
-                    continue
-
-                data, _ = recorder.read(read_size)
-
-                if self.connection is None:
-                    await asyncio.sleep(0.1)
-                    continue
-
-                if not sent_audio:
-                    asyncio.create_task(
-                        self.connection.send({"type": "response.cancel"})
-                    )
-                    sent_audio = True
-
+                data, overflowed = await self.audio_player.read(frames=self.read_size)
+                if overflowed:
+                    logger.warning("⚠️ Audio recorder overflowed")
                 await self.connection.input_audio_buffer.append(
                     audio=encode_audio_to_base64(data)
                 )
-
-                await asyncio.sleep(0)
+                if enable_audio_playback and self.audio_player:
+                    await self.audio_player.play(data)
+                await asyncio.sleep(0)  # 让出控制权
+        except asyncio.CancelledError:
+            logger.info("Audio sending task cancelled")
         finally:
-            recorder.stop()
-            recorder.close()
-            print("✓ Audio stream closed")
+            logger.info("✓ Audio sending stopped")
+            if self.audio_player:
+                await self.audio_player.stop()
 
     async def run(self, enable_audio_playback: bool = True) -> None:
-        """
-        运行推理器
+        # 不要裸 gather；一个崩了要能停掉另一个
+        self.is_running = True  # 在启动任务前设置运行状态
+        t_conn = asyncio.create_task(self.connect(), name="connect")
+        t_send = asyncio.create_task(self.send_audio_loop(enable_audio_playback), name="send_audio")
 
-        Args:
-            enable_audio_playback: 是否启用音频播放
-        """
-        print("=== Realtime Inferencer ===")
-        print("Starting audio streaming... Press Ctrl+C to stop")
-        print()
-
-        self.is_running = True
-        self._accumulated_items.clear()
-
-        if enable_audio_playback:
-            self.audio_player = AudioPlayerAsync()
-
-        try:
-            await asyncio.gather(
-                self._handle_connection(),
-                self._send_audio(),
-            )
-        except KeyboardInterrupt:
-            print("\n✓ Stopping...")
-        finally:
-            self.is_running = False
-            if self.audio_player:
-                self.audio_player.close()
-                print("✓ Audio player closed")
+        done, pending = await asyncio.wait(
+            {t_conn, t_send}, return_when=asyncio.FIRST_EXCEPTION
+        )
+        for t in pending:
+            logger.info(f"Cancelling task: {t.get_name()}")
+            t.cancel()
+        for t in done:
+            try:
+                t.result()
+            except Exception as e:
+                logger.error(f"Task {t.get_name()} failed: {e}", exc_info=True)
 
     async def stop(self) -> None:
         """停止推理器"""
@@ -262,4 +182,6 @@ class RealtimeInferencer:
         """异步上下文管理器退出"""
         await self.stop()
         if self.audio_player:
-            self.audio_player.close()
+            close_result = self.audio_player.close()
+            if asyncio.iscoroutine(close_result):
+                await close_result

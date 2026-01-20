@@ -1,7 +1,7 @@
 import asyncio
 
 from openai.types.realtime import (
-    ConversationCreatedEvent,
+    ResponseOutputItemAddedEvent,
     ConversationItemInputAudioTranscriptionCompletedEvent,
     ResponseAudioDeltaEvent,
     ResponseFunctionCallArgumentsDeltaEvent,
@@ -19,7 +19,7 @@ class VoiceMCPEventHandler(RealtimeEventHandler):
 
     def __init__(
         self,
-        transcript_queue: asyncio.Queue,
+        transcript_queue: asyncio.Queue | None = None,
         on_function_call_done_callback: FunctionCallDoneCallback | None = None,
     ):
         self.transcript_queue = transcript_queue
@@ -32,20 +32,17 @@ class VoiceMCPEventHandler(RealtimeEventHandler):
     async def on_session_updated(self) -> None:
         print("✓ Voice session updated")
 
-    async def on_response_output_item_add(self, event: ConversationCreatedEvent) -> None:
+    async def on_response_output_item_add(self, event: ResponseOutputItemAddedEvent) -> None:
         """对话创建时调用 - 从这里提取函数名"""
-        print(f"✓ Conversation created: {event.conversation.id}")
-        # 从 conversation.item 中提取函数名
-        if hasattr(event, 'conversation') and hasattr(event.conversation, 'item'):
-            item = event.conversation.item
-            if hasattr(item, 'name'):
-                self._current_function_name = item.name
+        # 从 item 中提取函数名
+        if hasattr(event, "item") and hasattr(event.item, "name"):
+            self._current_function_name = event.item.name
 
     async def on_function_call_delta(self, event: ResponseFunctionCallArgumentsDeltaEvent) -> None:
         """function call 参数增量 - 打字机效果"""
         print(event.delta, end="", flush=True)
 
-    async def on_function_call_done(self, event: ResponseFunctionCallArgumentsDoneEvent) -> None:
+    async def on_function_call_done(self, event: ResponseFunctionCallArgumentsDoneEvent) -> str | None:
         """function call 参数输出完成时调用"""
         print()  # 换行
         # 调用回调函数（如果有的话），传递函数名
@@ -53,9 +50,12 @@ class VoiceMCPEventHandler(RealtimeEventHandler):
             result = await self._on_function_call_done_callback(self._current_function_name, event)
             if result:
                 print(f"   📋 结果: {result[:200]}..." if len(result) > 200 else f"   📋 结果: {result}")
+            self._current_function_name = None
+            return result
         
         # 重置函数名
         self._current_function_name = None
+        return None
 
     async def on_transcript_delta(self, event) -> None:
         """音频转文本增量（ResponseAudioTranscriptDeltaEvent）"""
@@ -80,7 +80,7 @@ class VoiceMCPEventHandler(RealtimeEventHandler):
     ) -> None:
         """输入音频转录完成时调用（用户语音转写结果）"""
         print(f"\n🎤 语音识别: {event.transcript}")
-        if event.transcript.strip():
+        if self.transcript_queue is not None and event.transcript.strip():
             await self.transcript_queue.put(event.transcript.strip())
 
     async def on_text_done(

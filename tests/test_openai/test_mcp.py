@@ -8,10 +8,7 @@ import json
 import os
 
 import dotenv
-from openai.types.realtime import (
-    RealtimeFunctionTool,
-    ResponseFunctionCallArgumentsDoneEvent,
-)
+from openai.types.realtime import ResponseFunctionCallArgumentsDoneEvent
 
 from dazhi.handlers.default_event import DefaultEventHandler
 from dazhi.inferencers.realtime.inferencer import RealtimeConfig, RealtimeInferencer
@@ -24,23 +21,6 @@ MCD_MCP_URL = "https://mcp.mcd.cn/mcp-servers/mcd-mcp"
 
 # 全局 MCP 客户端引用（供回调函数使用）
 _mcp_client: MCPClient | None = None
-
-
-def mcp_tools_to_realtime_tools(mcp_client: MCPClient) -> list[RealtimeFunctionTool]:
-    """将 MCP 工具转换为 OpenAI Realtime 工具格式"""
-    realtime_tools = []
-    for tool in mcp_client.tools:
-        realtime_tool = RealtimeFunctionTool(
-            name=tool.name,
-            description=tool.description or "",
-            parameters=(
-                tool.inputSchema
-                if tool.inputSchema
-                else {"type": "object", "properties": {}, "required": []}
-            ),
-        )
-        realtime_tools.append(realtime_tool)
-    return realtime_tools
 
 
 async def mcp_function_callback(
@@ -99,7 +79,7 @@ async def main():
         await _mcp_client.connect()
 
         # 转换 MCP 工具为 Realtime 格式
-        tools = mcp_tools_to_realtime_tools(_mcp_client)
+        tools = _mcp_client.get_tools_for_realtime()
         print(f"✓ 已加载 {len(tools)} 个 MCP 工具: {[t.name for t in tools]}")
 
         # 配置
@@ -107,7 +87,7 @@ async def main():
             model=model,
             output_modalities=["text"],
         )
-
+        print("Realtime config:", config)
         # 初始化事件处理器（注入 MCP 回调函数）
         handler = DefaultEventHandler(
             audio_player=None,

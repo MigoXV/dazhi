@@ -1,10 +1,10 @@
-"""MCP 推理器模块 - 结合 LLM 和 MCP 工具调用"""
+"""MCP 客户端模块 - 适配 Realtime 工具调用"""
 
 from typing import Any
 
 from mcp import ClientSession, types
 from mcp.client.streamable_http import streamablehttp_client
-from openai.types.chat.chat_completion_tool_param import ChatCompletionToolParam
+from openai.types.realtime import RealtimeFunctionTool
 
 from .config import MCPConfig
 
@@ -42,25 +42,22 @@ class MCPClient:
         if self._cm:
             await self._cm.__aexit__(None, None, None)
 
-    def get_tools_for_openai(self) -> list[ChatCompletionToolParam]:
-        """将 MCP 工具转换为 OpenAI 格式"""
-        openai_tools = []
+    def get_tools_for_realtime(self) -> list[RealtimeFunctionTool]:
+        """将 MCP 工具转换为 Realtime 格式"""
+        realtime_tools: list[RealtimeFunctionTool] = []
         for tool in self.tools:
-            openai_tools.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.name,
-                        "description": tool.description or "",
-                        "parameters": (
-                            tool.inputSchema
-                            if tool.inputSchema
-                            else {"type": "object", "properties": {}}
-                        ),
-                    },
-                }
+            realtime_tools.append(
+                RealtimeFunctionTool(
+                    name=tool.name,
+                    description=tool.description or "",
+                    parameters=(
+                        tool.inputSchema
+                        if tool.inputSchema
+                        else {"type": "object", "properties": {}, "required": []}
+                    ),
+                )
             )
-        return openai_tools
+        return realtime_tools
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> str:
         """调用 MCP 工具"""

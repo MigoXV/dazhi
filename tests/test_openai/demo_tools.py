@@ -9,6 +9,7 @@ import os
 import dotenv
 from openai.types.realtime import RealtimeFunctionTool, ResponseFunctionCallArgumentsDoneEvent
 
+from dazhi.codec import SDAudioRecorder
 from dazhi.inferencers.realtime.inferencer import RealtimeConfig, RealtimeInferencer
 from dazhi.handlers.default_event import DefaultEventHandler
 
@@ -19,6 +20,7 @@ def get_tools():
     tool1 = RealtimeFunctionTool(
         name="get_current_time",
         description="获取当前的时间，格式为 HH:MM:SS",
+        type="function",
         parameters={
             "type": "object",
             "properties": {},
@@ -28,6 +30,7 @@ def get_tools():
     tool2 = RealtimeFunctionTool(
         name="get_weather",
         description="获取指定城市的当前天气情况",
+        type="function",
         parameters={
             "type": "object",
             "properties": {
@@ -64,7 +67,7 @@ async def stub_function_callback(
     return "当前温度为 25 摄氏度，天气晴朗"
 
 
-async def main():
+def main():
     model = os.getenv("OPENAI_MODEL", "Qwen/Qwen3-8B")
     print(f"Using model: {model}")
     
@@ -87,8 +90,12 @@ async def main():
         tools=get_tools(),
     )
     
-    await inferencer.run()
+    recorder = SDAudioRecorder(
+        channels=config.channels,
+        sample_rate=config.sample_rate,
+    )
+    asyncio.run(inferencer.run(audio_recorder=recorder))
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
