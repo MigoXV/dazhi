@@ -1,17 +1,13 @@
 import datetime
 import logging
 import os
-import queue
-import random
-import threading
-import time
-from collections.abc import Generator, Iterable
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
 
-import numpy as np
-from gradio import ChatMessage
-from openai.types.realtime import RealtimeFunctionTool
+from openai.types.realtime import (
+    AudioTranscription,
+    RealtimeAudioConfig,
+    RealtimeAudioConfigInput,
+    RealtimeFunctionTool,
+)
 
 from dazhi.inferencers.realtime.config import (
     RealtimeConfig,
@@ -19,24 +15,11 @@ from dazhi.inferencers.realtime.config import (
     RealtimeSessionConfig,
 )
 from dazhi.ui.chatbot import StreamChatbot
-from openai.types.realtime import (
-    RealtimeAudioConfig,
-    RealtimeAudioConfigInput,
-    AudioTranscription,
-)
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-
-def stream_text(
-    text: str, min_delay: float = 0.01, max_delay: float = 0.04
-) -> Iterable[str]:
-    for character in text:
-        time.sleep(random.uniform(min_delay, max_delay))
-        yield character
 
 
 def get_tools():
@@ -68,31 +51,11 @@ def get_tools():
     return [tool1, tool2]
 
 
-async def stub_function_callback(function_name: str, event) -> str | None:
-    """
-    Stub 回调函数 - 无论调用什么工具，都返回 25 摄氏度
-
-    Args:
-        function_name: 函数名（从 ConversationCreatedEvent 中提取）
-        event: function call 完成事件，包含 arguments（参数 JSON）、call_id
-
-    Returns:
-        工具调用结果字符串
-    """
-
-    # 无论什么工具调用，都返回 25 摄氏度
-    return "当前温度为 25 摄氏度，天气晴朗"
-
-
-def stub_reply(history: List[Dict]) -> Generator[str, None, None]:
-    """生成 stub 回复，用于驱动 StreamChatbot.handle_bot 的流式输出"""
-    last_user_message = ""
-    if history:
-        last_user_message = history[-1]["content"]
-        response = "今天的天气真好" * 30 + f"，你刚才说的是：{last_user_message}"
-    else:
-        response = "未收到用户消息。"
-    return stream_text(response)
+def get_tool_executors():
+    return {
+        "get_current_time": lambda args: datetime.datetime.now().strftime("%H:%M:%S"),
+        "get_weather": lambda args: f"{args['city']} 当前温度为零下5度，大雪。",
+    }
 
 
 if __name__ == "__main__":
@@ -109,6 +72,8 @@ if __name__ == "__main__":
         ),
     )
     print("RealtimeConfig:\n\n", config)
-    chatbot = StreamChatbot(realtime_config=config, tools=get_tools())
+    chatbot = StreamChatbot(
+        realtime_config=config, tools=get_tools(), tool_executors=get_tool_executors()
+    )
     # chatbot = StreamChatbot(realtime_config=config)
     chatbot.launch()

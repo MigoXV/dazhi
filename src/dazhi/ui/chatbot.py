@@ -6,11 +6,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import gradio as gr
 import numpy as np
+from openai.types.realtime import RealtimeFunctionTool
 
 from dazhi.codec.recorders import QueueAudioRecorder
 from dazhi.handlers import GradioEventHandler
 from dazhi.inferencers.realtime.inferencer import RealtimeConfig, RealtimeInferencer
-from openai.types.realtime import RealtimeFunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,10 @@ class ChatbotState:
     recorder: QueueAudioRecorder = field(default_factory=QueueAudioRecorder)
     _inferencer_task: Optional[asyncio.Task] = None
     tools: List[RealtimeFunctionTool] = field(default_factory=list)
+    tool_executors: Dict[str, Callable] = field(default_factory=dict)
 
     def __post_init__(self):
-        self.event_handler = GradioEventHandler()
+        self.event_handler = GradioEventHandler(tool_executors=self.tool_executors)
         self.inferencer = RealtimeInferencer(
             self.realtime_config,
             event_handler=self.event_handler,
@@ -67,12 +68,14 @@ class StreamChatbot:
         self,
         realtime_config: RealtimeConfig,
         tools: Optional[List[RealtimeFunctionTool]] = None,
+        tool_executors: Optional[Dict[str, Callable]] = None,
     ):
         self.demo = None
         self._build_interface()
 
         self.realtime_config = realtime_config
         self.tools = tools if tools is not None else []
+        self.tool_executors = tool_executors
 
     def _build_interface(self):
         """构建 Gradio 界面"""
@@ -130,7 +133,11 @@ class StreamChatbot:
     ) -> ChatbotState:
         """确保聊天机器人状态已初始化"""
         if state is None:
-            state = ChatbotState(realtime_config=self.realtime_config, tools=self.tools)
+            state = ChatbotState(
+                realtime_config=self.realtime_config,
+                tools=self.tools,
+                tool_executors=self.tool_executors,
+            )
             await state.start_inferencer()
             logger.info("Initialized new ChatbotState")
         return state

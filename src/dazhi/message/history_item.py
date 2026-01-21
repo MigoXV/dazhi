@@ -82,3 +82,50 @@ class AssistantMessageHistoryItem(MessageHistoryItem):
 
     def update_stream(self, chat_content_delta: str) -> None:
         self.chat_content = (self.chat_content or "") + chat_content_delta
+
+
+@dataclass
+class ToolsCallMessageHistoryItem(MessageHistoryItem):
+    role: Literal["assistant"] = field(default="assistant", init=False)
+    tool_name: Optional[str] = None
+    tool_arguments: Optional[str] = None
+
+    def render(self):
+        content = ""
+        if self.tool_name:
+            content += f"[Tool: {self.tool_name}]\n"
+        if self.tool_arguments:
+            content += f"Arguments: {self.tool_arguments}"
+        return content
+
+    def update(self, tool_name: str, tool_arguments: str) -> None:
+        self.tool_name = tool_name
+        self.tool_arguments = tool_arguments
+
+
+@dataclass
+class ToolResultMessageHistoryItem(MessageHistoryItem):
+    role: Literal["user"] = field(default="user", init=False)
+    tool_result: Optional[str] = None
+    tool_name: Optional[str] = None
+    tool_arguments: Optional[str] = None
+
+    def render(self):
+        content = ""
+        if self.tool_name:
+            content += f"[Tool: {self.tool_name}]\n"
+        if self.tool_arguments:
+            content += f"Arguments: {self.tool_arguments}\n"
+        if self.tool_result:
+            content += f"[Tool Result]\n{self.tool_result}"
+        return content
+
+    def update(
+        self,
+        tool_name: str,
+        tool_arguments: str,
+        tool_result: str,
+    ) -> None:
+        self.tool_name = tool_name
+        self.tool_arguments = tool_arguments
+        self.tool_result = tool_result

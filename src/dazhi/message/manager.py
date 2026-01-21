@@ -1,11 +1,21 @@
+import asyncio
+import json
 import logging
 from collections import OrderedDict
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+
+from openai.resources.realtime.realtime import AsyncRealtimeConnection
+from openai.types.realtime import (
+    RealtimeConversationItemFunctionCallOutput,
+    RealtimeResponseCreateParams,
+)
 
 from .history_item import (
     AssistantMessageHistoryItem,
     MessageHistoryItem,
     SystemMessageHistoryItem,
+    ToolResultMessageHistoryItem,
+    ToolsCallMessageHistoryItem,
     UserMessageHistoryItem,
 )
 
@@ -14,10 +24,13 @@ logger = logging.getLogger(__name__)
 
 class MessageManager:
 
-    def __init__(self):
+    def __init__(self, tool_executors: Optional[Dict[str, Callable]] = None):
         self.message_histories: OrderedDict[str, MessageHistoryItem] = OrderedDict()
+        self.tool_executors = tool_executors if tool_executors is not None else {}
 
-    def handle_event(self, event: Any, connection: Any = None) -> None:
+    async def handle_event(
+        self, event: Any, connection: AsyncRealtimeConnection = None
+    ) -> None:
         event_type: str = event.type
         names = event_type.split(".")
         if names[0] == "session":
@@ -38,6 +51,23 @@ class MessageManager:
             if names[1] == "output_text":
                 message_item = self.update_message(event.item_id, "assistant")
                 self.route_response_text(names, message_item, event)
+            elif names[1] == "function_call_arguments":
+                message_item = self.update_message(event.item_id, "tools_call")
+                if names[2] == "done":
+                    tool_result = self.route_function_call_arguments(
+                        names, message_item, event
+                    )
+                    self.update_message(
+                        event.item_id + "_result", "tool_result"
+                    ).update(
+                        message_item.tool_name, message_item.tool_arguments, tool_result
+                    )
+                    try:
+                        await self.send_tool_result(
+                            connection, event.call_id, tool_result
+                        )
+                    except Exception as e:
+                        logger.error(f"Error sending tool result: {e}")
             else:
                 logger.info(f"Unhandled response event: {event_type}")
         elif names[0] == "conversation":
@@ -60,7 +90,9 @@ class MessageManager:
     def update_message(
         self,
         message_id: str,
-        role: Optional[Literal["system", "user", "assistant"]] = None,
+        role: Optional[
+            Literal["system", "user", "assistant", "tools_call", "tool_result"]
+        ] = None,
     ) -> MessageHistoryItem:
         """如消息存在，找到对应消息并返回，否则创建新消息"""
         if message_id in self.message_histories:
@@ -71,6 +103,10 @@ class MessageManager:
             item = UserMessageHistoryItem()
         elif role == "assistant":
             item = AssistantMessageHistoryItem()
+        elif role == "tools_call":
+            item = ToolsCallMessageHistoryItem()
+        elif role == "tool_result":
+            item = ToolResultMessageHistoryItem()
         else:
             raise ValueError(f"Unknown role: {role}")
         self.message_histories[message_id] = item
@@ -109,3 +145,38 @@ class MessageManager:
             message_item.finish()
         else:
             logger.info(f"Unhandled response.output_text event: {event}")
+
+    def route_function_call_arguments(
+        self, names: List[str], message_item: ToolsCallMessageHistoryItem, event
+    ) -> str:
+        message_item.update(event.name, event.arguments)
+        try:
+            arguments = json.loads(event.arguments)
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding tool arguments: {e}")
+            tool_result = f"Error decoding tool arguments: {e}"
+            return tool_result
+        tool_result = self.use_tool(event.name, arguments)
+        return tool_result
+
+    def use_tool(self, name: str, arguments: Dict) -> str:
+        """调用工具并返回结果"""
+        tool_executor = self.tool_executors.get(name)
+        if not tool_executor:
+            return f"Tool {name} not found"
+        try:
+            result = tool_executor(arguments)
+            return result
+        except Exception as e:
+            logger.error(f"Error executing tool {name}: {e}")
+            return f"Error executing tool {name}: {e}"
+
+    async def send_tool_result(
+        self, connection: AsyncRealtimeConnection, call_id: str, output: str
+    ):
+        await connection.conversation.item.create(
+            item=RealtimeConversationItemFunctionCallOutput(
+                call_id=call_id, output=output, type="function_call_output"
+            )
+        )
+        await connection.response.create(response=RealtimeResponseCreateParams())

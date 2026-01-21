@@ -35,7 +35,9 @@ class RealtimeInferencer:
             tools: 可选的实时函数工具列表
         """
         self.config = config
-        self.read_size = int(self.config.audio.sample_rate * self.config.audio.read_interval)
+        self.read_size = int(
+            self.config.audio.sample_rate * self.config.audio.read_interval
+        )
 
         self.event_handler = event_handler
         self.tools = tools
