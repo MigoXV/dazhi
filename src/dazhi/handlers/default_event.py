@@ -21,21 +21,21 @@ class DefaultEventHandler(RealtimeEventHandler):
     def __init__(
         self,
         audio_player: AudioPlayerAsync | None = None,
-        on_function_call_done_callback: FunctionCallDoneCallback | None = None,
     ):
         self.audio_player = audio_player
         self.last_audio_item_id: str | None = None
         self._text_started = False  # 标记是否已开始文本输出
         self._function_call_started = False  # 标记是否已开始 function call 输出
         self._current_function_name: str | None = None  # 当前调用的函数名
-        self._on_function_call_done_callback = on_function_call_done_callback
 
     async def on_session_created(self, session_id: str) -> None:
         # print(f"✓ Session created: {session_id}")
         pass
+
     async def on_session_updated(self) -> None:
         # print("✓ Session updated")
         pass
+
     async def on_response_output_item_add(
         self, event: ResponseOutputItemAddedEvent
     ) -> None:

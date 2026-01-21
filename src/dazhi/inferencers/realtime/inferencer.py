@@ -2,45 +2,19 @@
 
 import asyncio
 import logging
-import os
 import ssl
-from dataclasses import dataclass, field
 from typing import Any, Callable, List, Optional
 
 from openai import AsyncOpenAI
 from openai.resources.realtime.realtime import AsyncRealtimeConnection
 from openai.types.realtime import RealtimeFunctionTool, RealtimeSessionCreateRequest
 
-from dazhi.codec import (
-    CHANNELS,
-    SAMPLE_RATE,
-    AudioPlayerAsync,
-    AudioRecorder,
-    encode_audio_to_base64,
-)
+from dazhi.codec import AudioPlayerAsync, AudioRecorder, encode_audio_to_base64
 from dazhi.handlers import RealtimeEventHandler
 
+from .config import RealtimeConfig
+
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class RealtimeConfig:
-    """实时推理配置"""
-
-    base_url: str | None = None
-    api_key: str | None = None
-    model: str = "transcribe"
-    output_modalities: list[str] = field(default_factory=lambda: ["text"])
-    ssl_verify: bool = False
-    channels: int = CHANNELS
-    sample_rate: int = SAMPLE_RATE
-    read_interval: float = 0.02  # 20ms
-
-    def __post_init__(self):
-        if self.base_url is None:
-            self.base_url = os.getenv("OPENAI_BASE_URL")
-        if self.api_key is None:
-            self.api_key = os.getenv("OPENAI_API_KEY")
 
 
 class RealtimeInferencer:
@@ -61,13 +35,13 @@ class RealtimeInferencer:
             tools: 可选的实时函数工具列表
         """
         self.config = config
-        self.read_size = int(self.config.sample_rate * self.config.read_interval)
+        self.read_size = int(self.config.audio.sample_rate * self.config.audio.read_interval)
 
         self.event_handler = event_handler
         self.tools = tools
         self.client = AsyncOpenAI(
-            base_url=self.config.base_url,
-            api_key=self.config.api_key,
+            base_url=self.config.openai.base_url,
+            api_key=self.config.openai.api_key,
         )
         self.audio_player = audio_recorder
 
@@ -79,7 +53,7 @@ class RealtimeInferencer:
     def _create_ssl_context(self) -> ssl.SSLContext:
         """创建 SSL 上下文"""
         ssl_context = ssl.create_default_context()
-        if not self.config.ssl_verify:
+        if not self.config.connection.ssl_verify:
             ssl_context.check_hostname = False
             ssl_context.verify_mode = ssl.CERT_NONE
         return ssl_context
@@ -89,7 +63,7 @@ class RealtimeInferencer:
         try:
             ssl_context = self._create_ssl_context()
             async with self.client.realtime.connect(
-                model=self.config.model,
+                model=self.config.connection.model,
                 websocket_connection_options={"ssl": ssl_context},
             ) as conn:
                 self.connection = conn
@@ -99,9 +73,10 @@ class RealtimeInferencer:
                 await conn.session.update(
                     session=RealtimeSessionCreateRequest(
                         type="realtime",
-                        output_modalities=self.config.output_modalities,
+                        output_modalities=self.config.session.output_modalities,
                         tools=self.tools,
-                        model=self.config.model,
+                        model=self.config.connection.model,
+                        audio=self.config.session.audio,
                     )
                 )
                 logger.info("✓ Session configured")
@@ -120,12 +95,14 @@ class RealtimeInferencer:
 
     async def send_audio_loop(self, enable_audio_playback: bool = True) -> None:
         """循环发送音频数据"""
-        logger.info(f"send_audio_loop started, enable_audio_playback={enable_audio_playback}")
+        logger.info(
+            f"send_audio_loop started, enable_audio_playback={enable_audio_playback}"
+        )
         self.is_running = True
         if enable_audio_playback:
             self.audio_player = AudioPlayerAsync(
-                sample_rate=self.config.sample_rate,
-                channels=self.config.channels,
+                sample_rate=self.config.audio.sample_rate,
+                channels=self.config.audio.channels,
             )
             await self.audio_player.start()
         else:
@@ -156,7 +133,9 @@ class RealtimeInferencer:
         # 不要裸 gather；一个崩了要能停掉另一个
         self.is_running = True  # 在启动任务前设置运行状态
         t_conn = asyncio.create_task(self.connect(), name="connect")
-        t_send = asyncio.create_task(self.send_audio_loop(enable_audio_playback), name="send_audio")
+        t_send = asyncio.create_task(
+            self.send_audio_loop(enable_audio_playback), name="send_audio"
+        )
 
         done, pending = await asyncio.wait(
             {t_conn, t_send}, return_when=asyncio.FIRST_EXCEPTION

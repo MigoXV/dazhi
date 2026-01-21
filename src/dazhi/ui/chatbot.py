@@ -10,6 +10,7 @@ import numpy as np
 from dazhi.codec.recorders import QueueAudioRecorder
 from dazhi.handlers import GradioEventHandler
 from dazhi.inferencers.realtime.inferencer import RealtimeConfig, RealtimeInferencer
+from openai.types.realtime import RealtimeFunctionTool
 
 logger = logging.getLogger(__name__)
 
@@ -20,15 +21,16 @@ class ChatbotState:
 
     realtime_config: RealtimeConfig = field(default_factory=RealtimeConfig)
     recorder: QueueAudioRecorder = field(default_factory=QueueAudioRecorder)
-    history: List[Dict[str, str]] = field(default_factory=list)
     _inferencer_task: Optional[asyncio.Task] = None
+    tools: List[RealtimeFunctionTool] = field(default_factory=list)
 
     def __post_init__(self):
-        event_handler = GradioEventHandler(chatbot_history=self.history)
+        self.event_handler = GradioEventHandler()
         self.inferencer = RealtimeInferencer(
             self.realtime_config,
-            event_handler=event_handler,
+            event_handler=self.event_handler,
             audio_recorder=self.recorder,
+            tools=self.tools,
         )
 
     async def start_inferencer(self):
@@ -54,15 +56,23 @@ class ChatbotState:
             except Exception as e:
                 logger.error(f"Error stopping inferencer task: {e}")
 
+    def render_history(self) -> List[Tuple[str, str]]:
+        return self.event_handler.get_history()
+
 
 class StreamChatbot:
     """流式聊天机器人界面类"""
 
-    def __init__(self, realtime_config: RealtimeConfig):
+    def __init__(
+        self,
+        realtime_config: RealtimeConfig,
+        tools: Optional[List[RealtimeFunctionTool]] = None,
+    ):
         self.demo = None
         self._build_interface()
 
         self.realtime_config = realtime_config
+        self.tools = tools if tools is not None else []
 
     def _build_interface(self):
         """构建 Gradio 界面"""
@@ -71,7 +81,7 @@ class StreamChatbot:
             with gr.Row():
                 with gr.Column(scale=2):
                     chatbot = gr.Chatbot(
-                        type="messages",
+                        show_label=True,
                         allow_tags=True,
                         height=600,
                         group_consecutive_messages=False,
@@ -82,9 +92,8 @@ class StreamChatbot:
                         streaming=True,
                         type="numpy",
                         label="Stream Audio Input",
-                        every=0.5,
+                        every=0.1,
                         show_label=True,
-                        show_download_button=True,
                     )
             # 绑定事件
             chat_states = gr.State(value=None)
@@ -92,6 +101,7 @@ class StreamChatbot:
                 self.handle_audio_stream,
                 inputs=[audio, chat_states],
                 outputs=[chatbot, chat_states],
+                show_progress="hidden",
             )
             # 添加清理事件处理
             demo.unload(lambda: self.handle_cleanup(chat_states.value))
@@ -113,14 +123,14 @@ class StreamChatbot:
         except Exception as e:
             logger.error(f"Failed to put audio data into recorder: {e}")
 
-        return state.history, state
+        return state.render_history(), state
 
     async def ensure_state_initialized(
         self, state: Optional[ChatbotState]
     ) -> ChatbotState:
         """确保聊天机器人状态已初始化"""
         if state is None:
-            state = ChatbotState(realtime_config=self.realtime_config)
+            state = ChatbotState(realtime_config=self.realtime_config, tools=self.tools)
             await state.start_inferencer()
             logger.info("Initialized new ChatbotState")
         return state
