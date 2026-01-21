@@ -48,6 +48,7 @@ class MCPClient:
         for tool in self.tools:
             realtime_tools.append(
                 RealtimeFunctionTool(
+                    type="function",
                     name=tool.name,
                     description=tool.description or "",
                     parameters=(

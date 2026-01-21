@@ -51,10 +51,18 @@ def get_tools():
     return [tool1, tool2]
 
 
+async def get_current_time(args):
+    return datetime.datetime.now().strftime("%H:%M:%S")
+
+
+async def get_weather(args):
+    return f"{args['city']} 当前温度为零下5度，大雪。"
+
+
 def get_tool_executors():
     return {
-        "get_current_time": lambda args: datetime.datetime.now().strftime("%H:%M:%S"),
-        "get_weather": lambda args: f"{args['city']} 当前温度为零下5度，大雪。",
+        "get_current_time": get_current_time,
+        "get_weather": get_weather,
     }
 
 

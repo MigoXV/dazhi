@@ -54,7 +54,7 @@ class MessageManager:
             elif names[1] == "function_call_arguments":
                 message_item = self.update_message(event.item_id, "tools_call")
                 if names[2] == "done":
-                    tool_result = self.route_function_call_arguments(
+                    tool_result = await self.route_function_call_arguments(
                         names, message_item, event
                     )
                     self.update_message(
@@ -74,6 +74,8 @@ class MessageManager:
             self.route_conversation(names, event)
         elif names[0] == "rate_limits":
             logger.info(event_type)
+        elif names[0] == "error":
+            logger.error(f"Error event received: {event}")
         else:
             logger.info(f"Unhandled event type: {event_type}")
         return
@@ -118,7 +120,7 @@ class MessageManager:
         elif names[1] == "speech_stopped":
             message_item.end_time = event.audio_end_ms / 1000
         else:
-            logger.info(f"Unhandled input_audio_buffer event: {event}")
+            logger.info(f"Unhandled input_audio_buffer event: {event.type}")
 
     def route_conversation(self, names: List[str], event):
         if names[1] == "item":
@@ -146,7 +148,7 @@ class MessageManager:
         else:
             logger.info(f"Unhandled response.output_text event: {event}")
 
-    def route_function_call_arguments(
+    async def route_function_call_arguments(
         self, names: List[str], message_item: ToolsCallMessageHistoryItem, event
     ) -> str:
         message_item.update(event.name, event.arguments)
@@ -156,16 +158,19 @@ class MessageManager:
             logger.error(f"Error decoding tool arguments: {e}")
             tool_result = f"Error decoding tool arguments: {e}"
             return tool_result
-        tool_result = self.use_tool(event.name, arguments)
+        tool_result = await self.use_tool(event.name, arguments)
         return tool_result
 
-    def use_tool(self, name: str, arguments: Dict) -> str:
+    async def use_tool(self, name: str, arguments: Dict) -> str:
         """调用工具并返回结果"""
         tool_executor = self.tool_executors.get(name)
         if not tool_executor:
             return f"Tool {name} not found"
         try:
-            result = tool_executor(arguments)
+            if asyncio.iscoroutinefunction(tool_executor):
+                result = await tool_executor(arguments)
+            else:
+                result = tool_executor(arguments)
             return result
         except Exception as e:
             logger.error(f"Error executing tool {name}: {e}")
