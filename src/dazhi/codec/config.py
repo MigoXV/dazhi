@@ -1,0 +1,6 @@
+"""音频编解码配置常量"""
+
+# 音频配置常量
+CHANNELS = 1
+SAMPLE_RATE = 16000
+OUTPUT_SAMPLE_RATE = 48000
