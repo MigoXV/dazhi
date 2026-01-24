@@ -129,3 +129,28 @@ class ToolResultMessageHistoryItem(MessageHistoryItem):
         self.tool_name = tool_name
         self.tool_arguments = tool_arguments
         self.tool_result = tool_result
+
+
+@dataclass
+class MCPCallMessageHistoryItem(MessageHistoryItem):
+    role: Literal["assistant"] = field(default="assistant", init=False)
+    mcp_name: Optional[str] = None
+    mcp_arguments: Optional[str] = None
+    mcp_result: Optional[str] = None
+
+    def render(self):
+        content = ""
+        if self.mcp_name:
+            content += f"[MCP: {self.mcp_name}]\n"
+        if self.mcp_arguments:
+            content += f"Arguments: {self.mcp_arguments}"
+        if self.mcp_result:
+            content += f"\n[MCP Result]\n{self.mcp_result}"
+        return content
+
+    def update_arguments(self, mcp_name: str, mcp_arguments: str) -> None:
+        self.mcp_name = mcp_name
+        self.mcp_arguments = mcp_arguments
+
+    def update_result(self, mcp_result: str) -> None:
+        self.mcp_result = mcp_result

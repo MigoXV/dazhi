@@ -1,3 +1,8 @@
+#!/usr/bin/env python3
+"""
+麦当劳 MCP 智能助手 Demo - UI 模式
+通过 Gradio UI 与 MCP 工具交互
+"""
 import asyncio
 import logging
 import os
@@ -8,13 +13,13 @@ from openai.types.realtime import (
     RealtimeAudioConfig,
     RealtimeAudioConfigInput,
 )
-from openai.types.realtime.realtime_tools_config_union import Mcp
 
 from dazhi.inferencers.realtime.config import (
     RealtimeConfig,
     RealtimeConnectionConfig,
     RealtimeSessionConfig,
 )
+from dazhi.mcp_adaptors.config import MCPConfig
 from dazhi.mcp_adaptors.mcp_client import MCPClient
 from dazhi.ui.chatbot import StreamChatbot
 
@@ -30,6 +35,17 @@ MCD_MCP_URL = "https://mcp.mcd.cn/mcp-servers/mcd-mcp"
 # 全局 MCP 客户端（延迟初始化）
 mcp_client: MCPClient | None = None
 mcp_initialized = asyncio.Event()
+
+
+async def ensure_mcp_connected():
+    """确保 MCP 客户端已连接（在 Gradio 事件循环中调用）"""
+    global mcp_client
+    if mcp_client is None:
+        mcp_config = MCPConfig(mcp_url=MCD_MCP_URL)
+        mcp_client = MCPClient(mcp_config)
+        await mcp_client.connect()
+        mcp_initialized.set()
+    return mcp_client
 
 
 def create_tool_executor(tool_name: str):
@@ -56,26 +72,27 @@ def create_tool_executor(tool_name: str):
     return executor
 
 
-def get_mcp():
-    mcp = Mcp(
-        server_url=MCD_MCP_URL,
-        server_label="mcd-mcp",
-        type="mcp",
-        authorization=os.getenv("MCD_MCP_TOKEN", "").strip(),
-        require_approval="never"
-    )
-    print("MCP 配置:\n", mcp)
-    return mcp
-
-
 def main():
     print("=" * 50)
     print("🍔 麦当劳 MCP 智能助手 (UI 模式)")
     print("=" * 50)
 
     # 同步获取工具列表（需要先连接一次）
-    mcp = get_mcp()
-    tools = [mcp]
+    mcp_config = MCPConfig(mcp_url=MCD_MCP_URL)
+    temp_client = MCPClient(mcp_config)
+
+    async def get_tools():
+        await temp_client.connect()
+        tools = temp_client.get_tools_for_realtime()
+        await temp_client.disconnect()
+        return tools
+
+    tools = asyncio.run(get_tools())
+    print(f"\n📋 可用工具: {[t.name for t in tools]}")
+
+    # 为每个工具创建对应的执行器
+    tool_executors = {tool.name: create_tool_executor(tool.name) for tool in tools}
+
     # 配置 Realtime
     model = os.getenv("OPENAI_MODEL", "gpt-4o")
     config = RealtimeConfig(
@@ -95,7 +112,7 @@ def main():
     chatbot = StreamChatbot(
         realtime_config=config,
         tools=tools,
-        tool_executors=None,
+        tool_executors=tool_executors,
     )
 
     chatbot.launch()

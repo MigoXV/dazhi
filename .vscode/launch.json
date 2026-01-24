@@ -13,6 +13,14 @@
             "envFile": "${workspaceFolder}/.env"
         },
         {
+            "name": "test ui mcp inferencer",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "tests/test_ui/test_ui_mcp.py",
+            "console": "integratedTerminal",
+            "envFile": "${workspaceFolder}/.env"
+        },
+        {
             "name": "test ui inferencer",
             "type": "debugpy",
             "request": "launch",
