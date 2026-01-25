@@ -22,7 +22,10 @@ class GradioEventHandler(RealtimeEventHandler):
         self.chatbot_history: List[Dict[str, str]] = []
 
     async def handle_event(self, event: Any, connection: Any = None) -> None:
-        await self.message_manager.handle_event(event, connection)
+        try:
+            await self.message_manager.handle_event(event, connection)
+        except Exception as e:
+            logger.error(f"Error handling event: {e}")
 
     def get_history(self) -> List[Dict[str, str]]:
         """获取聊天历史记录"""

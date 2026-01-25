@@ -12,6 +12,7 @@ from openai.types.realtime import (
 
 from .history_item import (
     AssistantMessageHistoryItem,
+    MCPCallMessageHistoryItem,
     MessageHistoryItem,
     SystemMessageHistoryItem,
     ToolResultMessageHistoryItem,
@@ -42,12 +43,18 @@ class MessageManager:
             elif names[1] == "updated":
                 system_item.update(event.session)
             else:
-                logger.info(f"Unhandled session event: {event}")
+                logger.info(f"Unhandled session event: {event_type}")
         elif names[0] == "input_audio_buffer":  # VAD 事件
             item_id = event.item_id
             message_item = self.update_message(item_id, "user")
             self.route_vad(names, message_item, event)
         elif names[0] == "response":
+            if names[1] == "created" or names[1] == "done":
+                return  # 忽略整体 response 事件
+            if names[1] == "output_item":
+                return  # 忽略整体 output_item 事件
+            if names[1] == "content_part":
+                return  # 忽略整体 content_part 事件
             if names[1] == "output_text":
                 message_item = self.update_message(event.item_id, "assistant")
                 self.route_response_text(names, message_item, event)
@@ -68,14 +75,20 @@ class MessageManager:
                         )
                     except Exception as e:
                         logger.error(f"Error sending tool result: {e}")
+            elif names[1] == "mcp_call_arguments":
+                pass
+            elif names[1] == "mcp_call":
+                pass
             else:
                 logger.info(f"Unhandled response event: {event_type}")
         elif names[0] == "conversation":
-            self.route_conversation(names, event)
+            await self.route_conversation(names, event, connection)
         elif names[0] == "rate_limits":
             logger.info(event_type)
         elif names[0] == "error":
             logger.error(f"Error event received: {event}")
+        elif names[0] == "mcp_list_tools":
+            logger.info(f"MCP Tools Event: {event_type}")
         else:
             logger.info(f"Unhandled event type: {event_type}")
         return
@@ -93,7 +106,15 @@ class MessageManager:
         self,
         message_id: str,
         role: Optional[
-            Literal["system", "user", "assistant", "tools_call", "tool_result"]
+            Literal[
+                "system",
+                "user",
+                "assistant",
+                "tools_call",
+                "tool_result",
+                "mcp_call",
+                "mcp_result",
+            ]
         ] = None,
     ) -> MessageHistoryItem:
         """如消息存在，找到对应消息并返回，否则创建新消息"""
@@ -109,6 +130,8 @@ class MessageManager:
             item = ToolsCallMessageHistoryItem()
         elif role == "tool_result":
             item = ToolResultMessageHistoryItem()
+        elif role == "mcp_call":
+            item = MCPCallMessageHistoryItem()
         else:
             raise ValueError(f"Unknown role: {role}")
         self.message_histories[message_id] = item
@@ -119,14 +142,43 @@ class MessageManager:
             message_item.start_time = event.audio_start_ms / 1000
         elif names[1] == "speech_stopped":
             message_item.end_time = event.audio_end_ms / 1000
+        elif names[1] == "committed":
+            pass
         else:
             logger.info(f"Unhandled input_audio_buffer event: {event.type}")
 
-    def route_conversation(self, names: List[str], event):
+    async def route_conversation(
+        self, names: List[str], event, connection: AsyncRealtimeConnection = None
+    ):
         if names[1] == "item":
-            if names[2] == "input_audio_transcription":
+            if names[2] == "added":
+                pass
+            elif names[2] == "done":
+                item_type = event.item.type
+                if item_type == "mcp_call":
+                    message_item: MCPCallMessageHistoryItem = self.update_message(
+                        event.item.id, "mcp_call"
+                    )
+                    message_item.update_arguments(
+                        f"{event.item.server_label}.{event.item.name}",
+                        event.item.arguments,
+                    )
+                    message_item.update_result(event.item.output)
+                    await self.send_response_create(connection)
+                elif item_type == "mcp_list_tools":
+                    logger.info(f"MCP List Tools done event")
+                elif item_type == "message":
+                    if event.item.role == "user":
+                        logger.info(f"User message item done event")
+                    elif event.item.role == "assistant":
+                        logger.info(f"Assistant message item done event")
+                else:
+                    logger.info(
+                        f"Unhandled conversation.item.done event: {event.type} with item type {item_type}"
+                    )
+            elif names[2] == "input_audio_transcription":
                 item_id = event.item_id
-                message_item = self.update_message(item_id)
+                message_item = self.update_message(item_id, "user")
                 if names[3] == "delta":
                     message_item.update_stream(event.delta)
                 elif names[3] == "completed":
@@ -135,6 +187,8 @@ class MessageManager:
                     logger.info(
                         f"Unhandled conversation.input_audio_transcription event: {event}"
                     )
+            else:
+                logger.info(f"Unhandled conversation.item event: {event}")
         else:
             logger.info(f"Unhandled conversation event: {event}")
 
@@ -184,4 +238,7 @@ class MessageManager:
                 call_id=call_id, output=output, type="function_call_output"
             )
         )
+        await connection.response.create(response=RealtimeResponseCreateParams())
+
+    async def send_response_create(self, connection: AsyncRealtimeConnection):
         await connection.response.create(response=RealtimeResponseCreateParams())
