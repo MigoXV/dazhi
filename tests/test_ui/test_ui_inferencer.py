@@ -81,7 +81,9 @@ if __name__ == "__main__":
     )
     print("RealtimeConfig:\n\n", config)
     chatbot = StreamChatbot(
-        realtime_config=config, tools=get_tools(), tool_executors=get_tool_executors()
+        realtime_config=config,
+        tools=get_tools(),
+        tool_executors=get_tool_executors(),
     )
     # chatbot = StreamChatbot(realtime_config=config)
     chatbot.launch()

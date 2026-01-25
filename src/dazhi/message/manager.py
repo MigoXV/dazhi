@@ -43,7 +43,7 @@ class MessageManager:
             elif names[1] == "updated":
                 system_item.update(event.session)
             else:
-                logger.info(f"Unhandled session event: {event}")
+                logger.info(f"Unhandled session event: {event_type}")
         elif names[0] == "input_audio_buffer":  # VAD 事件
             item_id = event.item_id
             message_item = self.update_message(item_id, "user")
@@ -178,7 +178,7 @@ class MessageManager:
                     )
             elif names[2] == "input_audio_transcription":
                 item_id = event.item_id
-                message_item = self.update_message(item_id)
+                message_item = self.update_message(item_id, "user")
                 if names[3] == "delta":
                     message_item.update_stream(event.delta)
                 elif names[3] == "completed":
