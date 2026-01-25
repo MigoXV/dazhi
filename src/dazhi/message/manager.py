@@ -76,9 +76,9 @@ class MessageManager:
                     except Exception as e:
                         logger.error(f"Error sending tool result: {e}")
             elif names[1] == "mcp_call_arguments":
-                logger.info(f"MCP Call Arguments Event: {event_type}")
+                pass
             elif names[1] == "mcp_call":
-                logger.info(f"MCP Call Event: {event_type}")
+                pass
             else:
                 logger.info(f"Unhandled response event: {event_type}")
         elif names[0] == "conversation":
@@ -88,7 +88,7 @@ class MessageManager:
         elif names[0] == "error":
             logger.error(f"Error event received: {event}")
         elif names[0] == "mcp_list_tools":
-            logger.info(f"MCP Tools Event: {event}")
+            logger.info(f"MCP Tools Event: {event_type}")
         else:
             logger.info(f"Unhandled event type: {event_type}")
         return
